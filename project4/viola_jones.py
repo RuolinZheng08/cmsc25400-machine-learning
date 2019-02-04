@@ -2,15 +2,20 @@
 
 import matplotlib.pyplot as plt
 import numpy as np
+import math
 from PIL import Image
 import os
+import time
 
-class WeakLearner(object):
-  '''A weak learner has a threshold, a parity and an optional weight'''
-  def __init__(self, threshold, parity):
-    self.threshold = threshold
-    self.parity = parity
-    self.weight = None
+def timeit(method):
+  '''Function decorator for timing'''
+  def timed(*args, **kw):
+      start = time.time()
+      result = method(*args, **kw)
+      end = time.time()
+      print(method.__name__, end - start)
+      return result
+  return timed
 
 def load_image(img):
   '''Return a numpy array of a single image converted to grayscale'''
@@ -21,6 +26,7 @@ def get_image(path):
   return [os.path.join(path, f) for f in os.listdir(path)
   if not f.startswith('.')]
 
+@timeit
 def load_data(faces_dir, background_dir):
   '''Return a N * 64 * 64 matrix for images and a N * 1 matrix for labels'''
   imgs = [load_image(img) for img in get_image(faces_dir) + \
@@ -29,12 +35,22 @@ def load_data(faces_dir, background_dir):
   N = data.shape[0] // 2
   labels = np.concatenate((np.ones(N, dtype='int'), 
     -np.ones(N, dtype='int')))
+  np.save('cached/data.npy', data)
+  np.save('cached/labels.npy', labels)
   return data, labels
+
+def load_cached():
+  '''Load data, labels, int_img_rep, feat_lst if they exist'''
+  data = np.load('cached/data.npy')
+  labels = np.load('cached/labels.npy')
+  int_img_rep = np.load('cached/int_img_rep.npy')
+  feat_lst = np.load('cached/feat_lst.npy')
+  return data, labels, int_img_rep, feat_lst
 
 def integral_image(arr):
   '''Compute and return the integral area representation of a matrix'''
   rows, cols = len(arr), len(arr[0])
-  ret = np.empty((rows, cols), dtype='int')
+  ret = np.zeros((rows, cols), dtype='int')
   for row in range(rows):
     for col in range(cols):
       if row == 0 and col == 0:
@@ -48,10 +64,13 @@ def integral_image(arr):
         ret[row - 1][col] + arr[row][col] - ret[row - 1][col - 1]
   return ret
 
+@timeit
 def compute_integral_image(imgs):
   '''Compute the integral image representation for given images'''
   integrals = [integral_image(img) for img in imgs]
-  return np.stack(integrals)
+  int_img_rep = np.stack(integrals)
+  np.save('cached/int_img_rep.npy', int_img_rep)
+  return int_img_rep
 
 def coord_vrect(row, col, h, w):
   '''Compute one feature of the two vertical rectangles'''
@@ -74,6 +93,7 @@ def two_rect_feature(N, shape, coord_func):
         ret.append(val)
   return ret
 
+@timeit
 def feature_list(N):
   '''Return a list of features, each as (darktl, darkbr, lighttl, lightbr)'''
   vrects, hrects = [], []
@@ -82,7 +102,9 @@ def feature_list(N):
       vshape, hshape = (w, h), (h, w)
       vrects.extend(two_rect(N, vshape, coord_vrect))
       hrects.extend(two_rect(N, hshape, coord_hrect))
-  return vrects + hrects
+  feat_lst = np.asarray(vrects + hrects, dtype='int')
+  np.save('cached/feat_lst.npy', feat_lst)
+  return feat_lst
 
 def average_pixel_intensity(integral, tl, br):
   '''Compute the avg pixel intensity given the top-left and bottom-right loc'''
@@ -99,7 +121,7 @@ def average_pixel_intensity(integral, tl, br):
   return (abcd - ab - ac + a) / ((x2 - x1 + 1) * (y2 - y1 + 1))
 
 def compute_feature(int_img_rep, feat_lst, feat_idx):
-  '''Compute feature evaluations given feature index'''
+  '''Compute feature evaluations across all images given feature index'''
   features = []
   darktl, darkbr, lighttl, lightbr = feat_lst[feat_idx]
   for i in range(int_img_rep.shape[0]):
@@ -109,13 +131,16 @@ def compute_feature(int_img_rep, feat_lst, feat_idx):
   return np.asarray(features)
 
 def sort_by_features(computed_features, labels, weights):
+  ''''Sort computed_features, labels, weights according to computed_features'''
   idx = np.argsort(computed_features)
   return computed_features[idx], labels[idx], weights[idx]
 
 def opt_theta_p(computed_features, labels, weights):
-  computed_features, labels, weights = sort_by_features(computed_features, labels, weights)
-  length = computed_features.shape[0]
-  error_lst = np.empty(length)
+  '''Compute the optimal theta and p value'''
+  computed_features, labels, weights = \
+  sort_by_features(computed_features, labels, weights)
+  length = labels.shape[0]
+  error_lst = np.zeros(length)
   afs = np.sum(weights[labels == 1])
   abg = np.sum(weights[labels == -1])
   fs, bg = 0, 0
@@ -128,43 +153,66 @@ def opt_theta_p(computed_features, labels, weights):
   opt_idx = np.argmin(error_lst)
   return computed_features[opt_idx], labels[opt_idx]
 
-def eval_learner(computed_features, learner):
-  res = learner.parity * (computed_features - learner.threshold)
+def eval_learner(computed_features, theta, p):
+  '''Generate hypotheses by the given learner'''
+  res = p * (computed_features - theta)
   for i in range(res.shape[0]):
-    res[i] = 1 if res[i] >= 0 else -1
+    res[i] = 1 if res[i] < 0 else 0
   return res.astype('int')
 
-def error_rate(int_img_rep, feat_lst, weights, feat_idx, p, theta):
-  pass
+def error_rate(labels, hypotheses, weights):
+  '''Compute the error rate of the given learner'''
+  return np.dot(weights, np.absolute(hypotheses - labels))
 
-def opt_weaklearner(int_img_rep, weights, feat_lst):
-  pass
+@timeit
+def opt_weaklearner(int_img_rep, feat_lst, labels, weights):
+  '''Return the optimal learner in the entire feature list'''
+  num_feat = feat_lst.shape[0]
+  learners = np.zeros(num_feat, dtype='object')
+  learner_errors = np.zeros(num_feat)
+  for i in range(num_feat):
+    computed_features = compute_feature(int_img_rep, feat_lst, i)
+    theta, p = opt_theta_p(computed_features, labels, weights)
+    
+    learners[i] = (i, theta, p)
+    hypotheses = eval_learner(computed_features, theta, p)
+    
+    learner_errors[i] = error_rate(labels, hypotheses, weights)
+  opt_idx = np.argmin(learner_errors)
+  return learners[opt_idx]
 
-def update_weights(weights, error_rate, y_pred, y_true):
-  pass
+def compute_learner_weight(error):
+  '''Compute the weight of the given learner based on its error'''
+  return math.log((1 - error) / error) / 2
 
-def adaboost():
+def update_weights(weights, error, learner_weight, labels, hypotheses):
+  '''Update the weights of the dataset'''
+  norm = 2 * math.sqrt(error * (1 - error))
+  return weights * np.exp(-learner_weight * labels * hypotheses)
+
+@timeit
+def adaboost(int_img_rep, feat_lst, labels, num_iter):
   '''The AdaBoost Algorithm'''
-  weights = np.zeros(M)
-  learners = []
-  learner_weights = []
-
-  for i in range(M):
-    weights[i] = 1 / M
-  for t in range(T):
-    learner = opt_weaklearner()
-    predictions = eval_learner()
-    learners.append(opt_weaklearner())
-
-    error = error_rate()
+  weights = np.ones(labels.shape[0]) / labels.shape[0]
+  learners = np.zeros(num_iter, dtype='object')
+  learner_weights = np.zeros(num_iter)
+  for t in range(num_iter):
+    learner = opt_weaklearner(int_img_rep, feat_lst, labels, weights)
+    i, theta, p = learner
+    computed_features = compute_feature(int_img_rep, feat_lst, i)
+    hypotheses = eval_learner(computed_features, theta, p)
+    
+    error = error_rate(labels, predictions, weights)
     learner_weight = compute_learner_weight(error)
-    learner_weights.append(learner_weight)
-    normalization = compute_normalization(error)
+    
+    learners[t], learner_weights[t] = (feat_lst[i], theta, p), learner_weight
 
-    weights = update_weights(weights, error, labels, predictions)
+    weights = update_weights(weights, error, learner_weight, labels, hypotheses)
 
-  detector = np.multiply(learners, learner_weights)
-  return detector
+  np.save('cached/learners.npy')
+  np.save('cached/weights.npy')
+    
+  return learners, learner_weights
 
 def main():
   pass
