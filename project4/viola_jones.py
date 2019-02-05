@@ -17,6 +17,8 @@ def timeit(method):
       return result
   return timed
 
+################################################################################
+
 def load_image(img):
   '''Return a numpy array of a single image converted to grayscale'''
   return np.asarray(Image.open(img).convert('L'))
@@ -28,24 +30,12 @@ def get_image(path):
 
 @timeit
 def load_data(faces_dir, background_dir):
-  '''Return a N * 64 * 64 matrix for images and a N * 1 matrix for labels'''
+  '''Return a N * 64 * 64 matrix of face and background images'''
   imgs = [load_image(img) for img in get_image(faces_dir) + \
   get_image(background_dir)]
   data = np.stack(imgs)
-  N = data.shape[0] // 2
-  labels = np.concatenate((np.ones(N, dtype='int'), 
-    -np.ones(N, dtype='int')))
   np.save('cached/data.npy', data)
-  np.save('cached/labels.npy', labels)
-  return data, labels
-
-def load_cached():
-  '''Load data, labels, int_img_rep, feat_lst if they exist'''
-  data = np.load('cached/data.npy')
-  labels = np.load('cached/labels.npy')
-  int_img_rep = np.load('cached/int_img_rep.npy')
-  feat_lst = np.load('cached/feat_lst.npy')
-  return data, labels, int_img_rep, feat_lst
+  return data
 
 def integral_image(arr):
   '''Compute and return the integral area representation of a matrix'''
@@ -100,11 +90,36 @@ def feature_list(N):
   for h in range(1, N + 1, 1):
     for w in range(2, N + 1, 2):
       vshape, hshape = (w, h), (h, w)
-      vrects.extend(two_rect(N, vshape, coord_vrect))
-      hrects.extend(two_rect(N, hshape, coord_hrect))
+      vrects.extend(two_rect_feature(N, vshape, coord_vrect))
+      hrects.extend(two_rect_feature(N, hshape, coord_hrect))
   feat_lst = np.asarray(vrects + hrects, dtype='int')
   np.save('cached/feat_lst.npy', feat_lst)
   return feat_lst
+
+def preprocess_data():
+  '''Load and preprocess data, return cached if exists'''
+  int_img_rep, feat_lst = None, None
+  if not os.path.exists('cached'):
+    os.mkdir('cached')
+  if os.path.exists('cached/int_img_rep.npy'):
+    int_img_rep = np.load('cached/int_img_rep.npy')
+  else:
+    if os.path.exists('cached/data.npy'):
+      data = np.load('cached/data.npy')
+    else:
+      data = load_data('faces', 'background')
+    int_img_rep = compute_integral_image(data)
+
+  if os.path.exists('cached/feat_lst.npy'):
+    feat_lst = np.load('cached/feat_lst.npy')
+  else:
+    feat_lst = feature_list(int_img_rep.shape[0])
+
+  N = int_img_rep.shape[0] // 2
+  labels = np.concatenate((np.ones(N, dtype='int'), -np.ones(N, dtype='int')))
+  return int_img_rep, feat_lst, labels
+
+################################################################################
 
 def average_pixel_intensity(integral, tl, br):
   '''Compute the avg pixel intensity given the top-left and bottom-right loc'''
@@ -194,28 +209,33 @@ def update_weights(weights, error, learner_weight, labels, hypotheses):
 def adaboost(int_img_rep, feat_lst, labels, num_iter):
   '''The AdaBoost Algorithm'''
   weights = np.ones(labels.shape[0]) / labels.shape[0]
-  learners = np.zeros(num_iter, dtype='object')
-  learner_weights = np.zeros(num_iter)
-  for t in range(num_iter):
+  weighted_learners = np.zeros(num_iter, dtype='object')
+  for t in range(0, num_iter):
+    print('Running trial', t + 1)
     learner = opt_weaklearner(int_img_rep, feat_lst, labels, weights)
     i, theta, p = learner
     computed_features = compute_feature(int_img_rep, feat_lst, i)
     hypotheses = eval_learner(computed_features, theta, p)
     
-    error = error_rate(labels, predictions, weights)
+    error = error_rate(labels, hypotheses, weights)
     learner_weight = compute_learner_weight(error)
-    
-    learners[t], learner_weights[t] = (feat_lst[i], theta, p), learner_weight
+
+    weighted_learners[t] = (feat_lst[i], theta, p, learner_weight)
 
     weights = update_weights(weights, error, learner_weight, labels, hypotheses)
 
-  np.save('cached/learners.npy')
-  np.save('cached/weights.npy')
+  np.save('cached/detector.npy', weighted_learners)
     
-  return learners, learner_weights
+  return weighted_learners
+
+################################################################################
 
 def main():
-  pass
+  if os.path.exists('cached/detector.npy'):
+    detector = np.load('cached/detector.npy')
+  else:
+    int_img_rep, feat_lst, labels = preprocess_data()
+    detector = adaboost(int_img_rep, feat_lst, labels, 10)
 
 if __name__ == '__main__':
   main()
