@@ -10,11 +10,12 @@ import time
 def timeit(method):
   '''Function decorator for timing'''
   def timed(*args, **kw):
-      start = time.time()
-      result = method(*args, **kw)
-      end = time.time()
-      print(method.__name__, end - start)
-      return result
+    print('Entering', method.__name__)
+    start = time.time()
+    result = method(*args, **kw)
+    end = time.time()
+    print(method.__name__, end - start)
+    return result
   return timed
 
 ################################################################################
@@ -39,8 +40,8 @@ def load_data(faces_dir, background_dir):
 
 def integral_image(arr):
   '''Compute and return the integral area representation of a matrix'''
-  rows, cols = len(arr), len(arr[0])
-  ret = np.zeros((rows, cols), dtype='int')
+  rows, cols = arr.shape
+  ret = np.zeros((rows, cols), dtype='int32')
   for row in range(rows):
     for col in range(cols):
       if row == 0 and col == 0:
@@ -76,8 +77,8 @@ def two_rect_feature(N, shape, coord_func):
   '''Compute a list of feature for the given shape and coord_func'''
   h, w = shape
   ret = []
-  for row in range(N):
-    for col in range(N):
+  for row in range(0, N, 4):
+    for col in range(0, N, 4):
       if row + h <= N and col + w <= N:
         val = coord_func(row, col, h, w)
         ret.append(val)
@@ -87,12 +88,12 @@ def two_rect_feature(N, shape, coord_func):
 def feature_list(N):
   '''Return a list of features, each as (darktl, darkbr, lighttl, lightbr)'''
   vrects, hrects = [], []
-  for h in range(1, N + 1, 1):
-    for w in range(2, N + 1, 2):
+  for h in range(4, N + 1, 4):
+    for w in range(8, N + 1, 8):
       vshape, hshape = (w, h), (h, w)
       vrects.extend(two_rect_feature(N, vshape, coord_vrect))
       hrects.extend(two_rect_feature(N, hshape, coord_hrect))
-  feat_lst = np.asarray(vrects + hrects, dtype='int')
+  feat_lst = np.asarray(vrects + hrects, dtype='int8')
   np.save('cached/feat_lst.npy', feat_lst)
   return feat_lst
 
@@ -113,10 +114,11 @@ def preprocess_data():
   if os.path.exists('cached/feat_lst.npy'):
     feat_lst = np.load('cached/feat_lst.npy')
   else:
-    feat_lst = feature_list(int_img_rep.shape[0])
+    feat_lst = feature_list(int_img_rep.shape[1])
 
   N = int_img_rep.shape[0] // 2
-  labels = np.concatenate((np.ones(N, dtype='int'), -np.ones(N, dtype='int')))
+  labels = \
+  np.concatenate((np.ones(N, dtype='int8'), -np.ones(N, dtype='int8')))
   return int_img_rep, feat_lst, labels
 
 ################################################################################
@@ -173,7 +175,7 @@ def eval_learner(computed_features, theta, p):
   res = p * (computed_features - theta)
   for i in range(res.shape[0]):
     res[i] = 1 if res[i] < 0 else 0
-  return res.astype('int')
+  return res.astype('int8')
 
 def error_rate(labels, hypotheses, weights):
   '''Compute the error rate of the given learner'''
@@ -220,7 +222,7 @@ def adaboost(int_img_rep, feat_lst, labels, num_iter):
     error = error_rate(labels, hypotheses, weights)
     learner_weight = compute_learner_weight(error)
 
-    weighted_learners[t] = (feat_lst[i], theta, p, learner_weight)
+    weighted_learners[t] = (i, theta, p, learner_weight)
 
     weights = update_weights(weights, error, learner_weight, labels, hypotheses)
 
@@ -235,7 +237,7 @@ def main():
     detector = np.load('cached/detector.npy')
   else:
     int_img_rep, feat_lst, labels = preprocess_data()
-    detector = adaboost(int_img_rep, feat_lst, labels, 10)
+    detector = adaboost(int_img_rep, feat_lst, labels, 20)
 
 if __name__ == '__main__':
   main()
