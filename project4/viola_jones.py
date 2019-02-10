@@ -155,7 +155,7 @@ def opt_theta_p(computed_features, labels, weights):
       fs += weights[j]
     else:
       bg += weights[j]
-    if bg + (afs - fs) <= fs + (abg - bg):
+    if bg + (afs - fs) < fs + (abg - bg):
       error_lst[j], polarities[j] = bg + (afs - fs), -1
     else:
       error_lst[j], polarities[j] = bg + (afs - fs), 1
@@ -171,7 +171,7 @@ def eval_learner(computed_features, theta, p):
   '''Return hypotheses 1 or -1 by the given learner'''
   res = p * (computed_features - theta)
   res = np.sign(res) 
-  res[res == 0] = -1
+  res[res == 0] = 1
   return res.astype('int8')
 
 def error_rate(labels, hypotheses, weights):
@@ -180,15 +180,15 @@ def error_rate(labels, hypotheses, weights):
 
 def false_positive_rate(labels, hypotheses):
   '''Compute FPR = FP / N = FP / (FP + TN)'''
-  fpos = np.count_nonzero((labels == -1) & (hypotheses > 0))
-  neg = np.count_nonzero(hypotheses <= 0)
-  return fpos / neg
+  fpos = np.count_nonzero((labels == -1) & (hypotheses >= 0))
+  tneg = np.count_nonzero(labels == -1)
+  return fpos / (fpos + tneg)
 
 def false_negative_rate(labels, hypotheses):
   '''Compute FNR = FN / P = FN / (FN + TP)'''
-  fneg = np.count_nonzero((labels == 1) & (hypotheses <= 0))
-  pos = np.count_nonzero(hypotheses > 0)
-  return fneg / pos
+  fneg = np.count_nonzero((labels == 1) & (hypotheses < 0))
+  tpos = np.count_nonzero(labels == 1)
+  return fneg / (fneg + tpos)
 
 def opt_weaklearner(int_img_rep, feat_lst, labels, weights):
   '''Return the optimal learner in the entire feature list'''
@@ -211,7 +211,7 @@ def compute_learner_weight(error):
   '''Compute the weight of the given learner based on its error'''
   return math.log((1 - error) / error) / 2
 
-def update_weights(weights, error, learner_weight, labels, hypotheses):
+def update_weights(weights, learner_weight, labels, hypotheses):
   '''Update the weights of the dataset'''
   weights = weights * np.exp(-learner_weight * labels * hypotheses)
   norm = np.sum(weights)
@@ -230,7 +230,7 @@ def eval_booster(int_img_rep, weighted_learners):
 
 ################################################################################
 
-def adaboost(int_img_rep, feat_lst, labels, weights, max_iters=20):
+def adaboost(int_img_rep, feat_lst, labels, weights, max_iters=6):
   '''The AdaBoost Algorithm'''
   weighted_learners = np.empty(max_iters, dtype='object')
   for t in range(0, max_iters):
@@ -244,12 +244,12 @@ def adaboost(int_img_rep, feat_lst, labels, weights, max_iters=20):
     learner_weight = compute_learner_weight(error)
 
     weighted_learners[t] = (feat_lst[i], theta, p, learner_weight)
-    weights = update_weights(weights, error, learner_weight, labels, hypotheses)
+    weights = update_weights(weights, learner_weight, labels, hypotheses)
 
     false_pos_rate = false_positive_rate(labels, hypotheses)
-    print('\bFalse Positive:', false_pos_rate)
+    print('False Positive:', false_pos_rate)
     
-    if false_pos_rate < 0.2:
+    if false_pos_rate < 0.3 and t >= 3:
       break
 
   return weighted_learners[weighted_learners != None], weights
@@ -264,14 +264,17 @@ def cascade(int_img_rep, feat_lst, labels, max_boosters=10):
     booster, weights = adaboost(int_img_rep, feat_lst, labels, weights)
     hypotheses = eval_booster(int_img_rep, booster)
 
+    print('False Negative Before Thresholding:', 
+      false_negative_rate(labels, hypotheses))
+
     threshold = np.min(hypotheses[labels == 1])
     boosters[i] = (booster, threshold)
     hypotheses -= threshold
 
-    print('\bFalse Negative After Thresholding:', 
-      false_negative_rate(labels, hypotheses))
+    print('False Positive After Thresholding:', 
+      false_positive_rate(labels, hypotheses))
     
-    filter_idx = (hypotheses > 0) | (labels == 1)
+    filter_idx = (hypotheses >= 0) | (labels == 1)
     labels = labels[filter_idx]
     int_img_rep = int_img_rep[filter_idx]
     weights = weights[filter_idx]
@@ -287,8 +290,8 @@ def eval_cascade(int_test_img_rep, boosters):
   for i in range(boosters.shape[0]):
     booster, threshold = boosters[i]
     hypotheses = eval_booster(int_test_img_rep, booster) - threshold
-    int_test_img_rep = int_test_img_rep[hypotheses > 0]
-    faces_idx = faces_idx[hypotheses > 0]
+    int_test_img_rep = int_test_img_rep[hypotheses >= 0]
+    faces_idx = faces_idx[hypotheses >= 0]
 
     print('Remaining Test Points:', faces_idx.shape[0])
 
