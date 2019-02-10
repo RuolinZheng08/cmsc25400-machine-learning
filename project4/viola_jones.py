@@ -1,24 +1,9 @@
 #!/usr/bin/env python3
 
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-from skimage.util.shape import view_as_windows
 import numpy as np
 import math
 from PIL import Image
 import os
-import time
-
-def timeit(method):
-  '''Function decorator for timing'''
-  def timed(*args, **kw):
-    print('Entering', method.__name__)
-    start = time.time()
-    result = method(*args, **kw)
-    end = time.time()
-    print(method.__name__, end - start)
-    return result
-  return timed
 
 ################################################################################
 
@@ -31,13 +16,11 @@ def get_image(path):
   return [os.path.join(path, f) for f in os.listdir(path)
   if not f.startswith('.')]
 
-@timeit
 def load_data(faces_dir, background_dir):
   '''Return an N * 64 * 64 matrix of face and background images'''
   imgs = [load_image(img) for img in get_image(faces_dir) + \
   get_image(background_dir)]
   data = np.stack(imgs)
-  np.save('cached/data.npy', data)
   return data
 
 def integral_image(arr):
@@ -57,12 +40,10 @@ def integral_image(arr):
         ret[row - 1][col] + arr[row][col] - ret[row - 1][col - 1]
   return ret
 
-@timeit
-def compute_integral_image(imgs, fname='int_img_rep'):
+def compute_integral_image(imgs):
   '''Compute the integral image representation for given images'''
   integrals = [integral_image(img) for img in imgs]
   int_img_rep = np.stack(integrals)
-  np.save('cached/' + fname + '.npy', int_img_rep)
   return int_img_rep
 
 def coord_vrect(row, col, h, w):
@@ -75,32 +56,33 @@ def coord_hrect(row, col, h, w):
   return ((row, col + w // 2), (row + h - 1, col + w - 1), 
     (row, col), (row + h - 1, col + w // 2 - 1))
 
-def two_rect_feature(N, shape, coord_func):
+def two_rect_feature(N, shape, step, coord_func):
   '''Compute a list of feature for the given shape and coord_func'''
   h, w = shape
   ret = []
-  for row in range(0, N, 16):
-    for col in range(0, N, 16):
+  for row in range(0, N, step):
+    for col in range(0, N, step):
       if row + h <= N and col + w <= N:
         val = coord_func(row, col, h, w)
         ret.append(val)
   return ret
 
-@timeit
-def feature_list(N):
+def feature_list(N, base=(4, 8), step=4):
   '''Return a list of features, each as (darktl, darkbr, lighttl, lightbr)'''
   vrects, hrects = [], []
-  for h in range(8, N + 1, 16):
-    for w in range(16, N + 1, 32):
+  hstep, wstep = base
+  for h in range(hstep, N + 1, hstep):
+    for w in range(wstep, N + 1, wstep):
       vshape, hshape = (w, h), (h, w)
-      vrects.extend(two_rect_feature(N, vshape, coord_vrect))
-      hrects.extend(two_rect_feature(N, hshape, coord_hrect))
+      vrects.extend(two_rect_feature(N, vshape, step, coord_vrect))
+      hrects.extend(two_rect_feature(N, hshape, step, coord_hrect))
   feat_lst = np.asarray(vrects + hrects, dtype='int8')
-  np.save('cached/feat_lst.npy', feat_lst)
+  
   return feat_lst
 
-def preprocess_data():
+def preprocess_data(base=(4, 8), step=4):
   '''Load and preprocess data, return cached if exists'''
+  print('Preprocessing data...')
   int_img_rep, feat_lst = None, None
   if not os.path.exists('cached'):
     os.mkdir('cached')
@@ -112,21 +94,24 @@ def preprocess_data():
     else:
       data = load_data('faces', 'background')
     int_img_rep = compute_integral_image(data)
+    np.save('cached/int_img_rep.npy', int_img_rep)
 
   if os.path.exists('cached/feat_lst.npy'):
     feat_lst = np.load('cached/feat_lst.npy')
   else:
-    feat_lst = feature_list(int_img_rep.shape[1])
+    feat_lst = feature_list(int_img_rep.shape[1], base, step)
+    np.save('cached/feat_lst.npy', feat_lst)
 
   N = int_img_rep.shape[0] // 2
   labels = \
   np.concatenate((np.ones(N, dtype='int8'), -np.ones(N, dtype='int8')))
+
   return int_img_rep, feat_lst, labels
 
 ################################################################################
 
-def average_pixel_intensity(integral, tl, br):
-  '''Compute the avg pixel intensity given the top-left and bottom-right loc'''
+def pixel_intensity(integral, tl, br):
+  '''Compute the pixel intensity given the top-left and bottom-right loc'''
   y1, x1 = tl
   y2, x2 = br
   abcd, ab, ac, a = 0, 0, 0, 0
@@ -137,17 +122,19 @@ def average_pixel_intensity(integral, tl, br):
     ac = integral[y2, x1 - 1]
   if y1 > 0 and x1 > 0:
     a = integral[y1 - 1, x1 - 1]
-  return (abcd - ab - ac + a) / ((x2 - x1 + 1) * (y2 - y1 + 1))
+  return abcd - ab - ac + a
 
-def compute_feature(int_img_rep, feat_lst, feat_idx):
-  '''Compute feature evaluations across all images given feature index'''
-  features = []
-  darktl, darkbr, lighttl, lightbr = feat_lst[feat_idx]
+def compute_feature(int_img_rep, feature):
+  '''Compute feature evaluations across all images given a feature'''
+  features = np.zeros(int_img_rep.shape[0])
+  darktl, darkbr, lighttl, lightbr = feature
+  y1, x1 = darktl
+  y2, x2 = darkbr
   for i in range(int_img_rep.shape[0]):
-    dark = average_pixel_intensity(int_img_rep[i], darktl, darkbr)
-    light = average_pixel_intensity(int_img_rep[i], lighttl, lightbr)
-    features.append(dark - light)
-  return np.asarray(features)
+    dark = pixel_intensity(int_img_rep[i], darktl, darkbr)
+    light = pixel_intensity(int_img_rep[i], lighttl, lightbr)
+    features[i] = (dark - light) / ((x2 - x1 + 1) * (y2 - y1 + 1))
+  return features
 
 def sort_by_features(computed_features, labels, weights):
   ''''Sort computed_features, labels, weights according to computed_features'''
@@ -159,38 +146,57 @@ def opt_theta_p(computed_features, labels, weights):
   computed_features, labels, weights = \
   sort_by_features(computed_features, labels, weights)
   length = labels.shape[0]
-  error_lst = np.zeros(length)
+  error_lst, polarities = np.zeros(length), np.zeros(length, dtype='int8')
   afs = np.sum(weights[labels == 1])
   abg = np.sum(weights[labels == -1])
   fs, bg = 0, 0
   for j in range(length):
     if labels[j] == 1:
-      fs += 1 * weights[j]
+      fs += weights[j]
     else:
-      bg += 1 * weights[j]
-    error_lst[j] = min(bg + (afs - fs), fs + (abg - bg))
+      bg += weights[j]
+    if bg + (afs - fs) <= fs + (abg - bg):
+      error_lst[j], polarities[j] = bg + (afs - fs), -1
+    else:
+      error_lst[j], polarities[j] = bg + (afs - fs), 1
   opt_idx = np.argmin(error_lst)
-  return computed_features[opt_idx], labels[opt_idx]
+
+  if opt_idx == length - 1:
+    theta = computed_features[opt_idx]
+  else:
+    theta = (computed_features[opt_idx] + computed_features[opt_idx + 1]) / 2
+  return theta, polarities[opt_idx]
 
 def eval_learner(computed_features, theta, p):
-  '''Generate hypotheses by the given learner'''
+  '''Return hypotheses 1 or -1 by the given learner'''
   res = p * (computed_features - theta)
-  res[res < 0] = 1
-  res[res != 1] = 0
+  res = np.sign(res) 
+  res[res == 0] = -1
   return res.astype('int8')
 
 def error_rate(labels, hypotheses, weights):
   '''Compute the error rate of the given learner'''
-  return np.dot(weights, np.absolute(hypotheses - labels))
+  return np.dot(weights, np.absolute((hypotheses - labels) / 2))
 
-@timeit
+def false_positive_rate(labels, hypotheses):
+  '''Compute FPR = FP / N = FP / (FP + TN)'''
+  fpos = np.count_nonzero((labels == -1) & (hypotheses > 0))
+  neg = np.count_nonzero(hypotheses <= 0)
+  return fpos / neg
+
+def false_negative_rate(labels, hypotheses):
+  '''Compute FNR = FN / P = FN / (FN + TP)'''
+  fneg = np.count_nonzero((labels == 1) & (hypotheses <= 0))
+  pos = np.count_nonzero(hypotheses > 0)
+  return fneg / pos
+
 def opt_weaklearner(int_img_rep, feat_lst, labels, weights):
   '''Return the optimal learner in the entire feature list'''
   num_feat = feat_lst.shape[0]
-  learners = np.zeros(num_feat, dtype='object')
+  learners = np.empty(num_feat, dtype='object')
   learner_errors = np.zeros(num_feat)
   for i in range(num_feat):
-    computed_features = compute_feature(int_img_rep, feat_lst, i)
+    computed_features = compute_feature(int_img_rep, feat_lst[i])
     theta, p = opt_theta_p(computed_features, labels, weights)
     
     learners[i] = (i, theta, p)
@@ -198,7 +204,7 @@ def opt_weaklearner(int_img_rep, feat_lst, labels, weights):
     
     learner_errors[i] = error_rate(labels, hypotheses, weights)
   opt_idx = np.argmin(learner_errors)
-  print('Error', learners[opt_idx])
+  print('Min Error:', learner_errors[opt_idx])
   return learners[opt_idx]
 
 def compute_learner_weight(error):
@@ -211,105 +217,79 @@ def update_weights(weights, error, learner_weight, labels, hypotheses):
   norm = np.sum(weights)
   return weights / norm
 
-@timeit
-def adaboost(int_img_rep, feat_lst, labels, weights, num_iter):
+def eval_booster(int_img_rep, weighted_learners):
+  '''Return raw values of prediction by the given set of weighted learners'''
+  hypotheses = np.zeros(int_img_rep.shape[0])
+
+  for t in range(weighted_learners.shape[0]):
+    feature, theta, p, learner_weight = weighted_learners[t]
+    computed_features = compute_feature(int_img_rep, feature)
+    hypotheses += eval_learner(computed_features, theta, p) * learner_weight
+
+  return hypotheses
+
+################################################################################
+
+def adaboost(int_img_rep, feat_lst, labels, weights, max_iters=20):
   '''The AdaBoost Algorithm'''
-  weighted_learners = np.zeros(num_iter, dtype='object')
-  for t in range(0, num_iter):
-    print('Running trial', t + 1)
+  weighted_learners = np.empty(max_iters, dtype='object')
+  for t in range(0, max_iters):
+    print('\n***Running AdaBoost trial***', t + 1)
     learner = opt_weaklearner(int_img_rep, feat_lst, labels, weights)
     i, theta, p = learner
-    computed_features = compute_feature(int_img_rep, feat_lst, i)
+    computed_features = compute_feature(int_img_rep, feat_lst[i])
     hypotheses = eval_learner(computed_features, theta, p)
     
     error = error_rate(labels, hypotheses, weights)
     learner_weight = compute_learner_weight(error)
 
-    weighted_learners[t] = (i, theta, p, learner_weight)
-
+    weighted_learners[t] = (feat_lst[i], theta, p, learner_weight)
     weights = update_weights(weights, error, learner_weight, labels, hypotheses)
 
-  np.save('cached/detector.npy', weighted_learners)
+    false_pos_rate = false_positive_rate(labels, hypotheses)
+    print('\bFalse Positive:', false_pos_rate)
     
-  return weighted_learners
+    if false_pos_rate < 0.2:
+      break
 
-@timeit
-def cascade(int_img_rep, weights, num_boosters):
+  return weighted_learners[weighted_learners != None], weights
+
+def cascade(int_img_rep, feat_lst, labels, max_boosters=10):
   '''Chain several boosters from different runs of AdaBoost'''
   weights = np.ones(labels.shape[0]) / labels.shape[0]
-  boosters = []
-  for i in range(num_boosters):
-    weights = adaboost(int_img_rep, feat_lst, labels, weights, num_iter)
+  boosters = np.empty(max_boosters, dtype='object')
+  for i in range(max_boosters):
+    print('\n\n---Running Cascade trial---', i + 1)
+    print('Data Size:', labels.shape[0])
+    booster, weights = adaboost(int_img_rep, feat_lst, labels, weights)
+    hypotheses = eval_booster(int_img_rep, booster)
 
-################################################################################
+    threshold = np.min(hypotheses[labels == 1])
+    boosters[i] = (booster, threshold)
+    hypotheses -= threshold
 
-def extract_patches(img):
-  '''Return (N - 64 + 1)^2 * 64 * 64 representation of an N * N image'''
-  patches = view_as_windows(img, window_shape=(64, 64), step=32)
-  num_patches = patches.shape[0] * patches.shape[1]
-  patches = patches.reshape((num_patches, 64, 64))
-  return patches
+    print('\bFalse Negative After Thresholding:', 
+      false_negative_rate(labels, hypotheses))
+    
+    filter_idx = (hypotheses > 0) | (labels == 1)
+    labels = labels[filter_idx]
+    int_img_rep = int_img_rep[filter_idx]
+    weights = weights[filter_idx]
+    
+    print('Remaining Data Size: {}, Faces: {}'.format(labels.shape[0],
+      np.count_nonzero(labels == 1)))
+  return boosters[boosters != None]
 
-def predict(int_img_rep, detector, feat_lst):
-  '''Predict on the given (N - 64 + 1)^2 * 64 * 64 patches'''
-  predictions = np.zeros(int_img_rep.shape[0])
+def eval_cascade(int_test_img_rep, boosters):
+  '''Return N * 1 array of hypotheses for N * 64 * 64 int_img_rep'''
+  faces_idx = np.arange(int_test_img_rep.shape[0])
 
-  for t in range(detector.shape[0]):
-    i, theta, p, learner_weight = detector[t]
-    computed_features = compute_feature(int_img_rep, feat_lst, i)
-    predictions += eval_learner(computed_features, theta, p) * learner_weight
+  for i in range(boosters.shape[0]):
+    booster, threshold = boosters[i]
+    hypotheses = eval_booster(int_test_img_rep, booster) - threshold
+    int_test_img_rep = int_test_img_rep[hypotheses > 0]
+    faces_idx = faces_idx[hypotheses > 0]
 
-  return np.sign(predictions).astype('int8')
+    print('Remaining Test Points:', faces_idx.shape[0])
 
-def draw_rect(coord):
-  '''Draw a red rectangle at given coord (x, y)'''
-  return Rectangle(coord, 64, 64, fill=False, edgecolor='r')
-
-def get_coord(idx, width):
-  '''Return the coord (x, y) given the index into a flat list'''
-  return idx % width, idx // width
-
-def is_adjacent(coord1, coord2):
-  '''Exclusion rule to avoid overlapping rectangles'''
-  if not coord1 or not coord2:
-    return False
-  x1, y1 = coord1
-  x2, y2 = coord2
-  return abs(x1 - x2) < 64 and abs(y1 - y2) < 64
-
-def label_image(img, predictions):
-  '''Label the image given predictions'''
-  fig, ax = plt.subplots(1)
-  ax.imshow(img)
-  ax.axis('off')
-  prev = None
-  for i in range(predictions.shape[0]):
-    if predictions[i] == 1:
-      coord = get_coord(i, img.size[0])
-      if not is_adjacent(prev, coord):
-        ax.add_patch(draw_rect(coord))
-        prev = coord
-  plt.show()
-  fig.savefig('result.jpg')
-
-################################################################################
-
-def main():
-  int_img_rep, feat_lst, labels = preprocess_data()
-  if os.path.exists('cached/detector.npy'):
-    detector = np.load('cached/detector.npy')
-  else:
-    detector = adaboost(int_img_rep, feat_lst, labels, 5)
-
-  img = Image.open('class.jpg')
-  if os.path.exists('cached/int_test_img_rep.npy'):
-    int_test_img_rep = np.load('cached/int_test_img_rep.npy')
-  else:
-    patches = extract_patches(np.asarray(img))
-    int_test_img_rep = compute_integral_image(patches, fname='int_test_img_rep')
-  predictions = predict(int_test_img_rep, detector, feat_lst)
-
-  label_image(img, predictions)
-
-if __name__ == '__main__':
-  main()
+  return faces_idx
