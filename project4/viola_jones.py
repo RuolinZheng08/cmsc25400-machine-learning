@@ -4,7 +4,6 @@ import numpy as np
 import math
 from PIL import Image
 import os
-import time
 
 ################################################################################
 
@@ -209,12 +208,6 @@ def false_positive_rate(labels, hypotheses):
   tneg = np.count_nonzero(labels == -1)
   return fpos / (fpos + tneg)
 
-def false_negative_rate(labels, hypotheses):
-  '''Compute FNR = FN / P = FN / (FN + TP)'''
-  fneg = np.count_nonzero((labels == 1) & (hypotheses < 0))
-  tpos = np.count_nonzero(labels == 1)
-  return fneg / (fneg + tpos)
-
 def opt_weaklearner(int_img_rep, feat_lst, labels, weights):
   '''Return the optimal learner in the entire feature list'''
   num_feat = feat_lst.shape[0]
@@ -238,7 +231,7 @@ def update_weights(weights, learner_weight, labels, hypotheses):
   norm = np.sum(weights)
   return weights / norm
 
-def eval_booster(int_img_rep, weighted_learners):
+def eval_booster(int_img_rep, weighted_learners, threshold):
   '''Return raw values of prediction by the given set of weighted learners'''
   hypotheses = np.zeros(int_img_rep.shape[0])
 
@@ -246,16 +239,30 @@ def eval_booster(int_img_rep, weighted_learners):
     feature, theta, p, learner_weight = weighted_learners[t]
     computed_features = compute_feature(int_img_rep, feature)
     hypotheses += p * (computed_features - theta) * learner_weight
-  print(hypotheses)
+
+  return hypotheses - threshold
+
+def eval_cascade(int_img_rep, boosters):
+  '''Return N * 1 array of hypotheses for N * 64 * 64 int_img_rep'''
+  hypotheses = np.zeros(int_img_rep.shape[0])
+
+  for i in range(boosters.shape[0]):
+    booster, threshold = boosters[i]
+    hypotheses[hypotheses >= 0] += eval_booster(int_img_rep[hypotheses >= 0], 
+      booster, threshold)
+
   return hypotheses
 
 ################################################################################
 
-def adaboost(int_img_rep, feat_lst, labels, weights, max_iters=12):
+def adaboost(int_img_rep, feat_lst, labels, weights, max_iters=15):
   '''The AdaBoost Algorithm'''
   weighted_learners = np.empty(max_iters, dtype='object')
+  threshold = 0
+
   for t in range(0, max_iters):
     print('\n***Running AdaBoost trial***', t + 1)
+
     learner = opt_weaklearner(int_img_rep, feat_lst, labels, weights)
     i, theta, p = learner
     computed_features = compute_feature(int_img_rep, feat_lst[i])
@@ -268,16 +275,25 @@ def adaboost(int_img_rep, feat_lst, labels, weights, max_iters=12):
     weights = update_weights(weights, learner_weight, labels, hypotheses)
 
     hypotheses = eval_booster(int_img_rep, 
-      weighted_learners[weighted_learners != None])
-    false_pos_rate = false_positive_rate(labels, hypotheses)
-    print('False Positive Of Strong Learner:', false_pos_rate)
+      weighted_learners[weighted_learners != None], threshold)
     
-    if false_pos_rate < 0.2:
+    print('False Positive Of Strong Learner Before Thresholding:', 
+      false_positive_rate(labels, hypotheses))
+    print('Threshold:', np.min(hypotheses[labels == 1]), 
+      'Overall:', np.min(hypotheses))
+
+    threshold = np.min(hypotheses[labels == 1])
+    hypotheses -= threshold
+    false_pos_rate = false_positive_rate(labels, hypotheses)
+    print('False Positive Of Strong Learner After Thresholding:', 
+      false_pos_rate)
+    
+    if false_pos_rate < 0.3:
       break
 
-  return weighted_learners[weighted_learners != None], weights
+  return weighted_learners[weighted_learners != None], threshold, weights
 
-def cascade(int_img_rep, feat_lst, labels, max_boosters=15):
+def cascade(int_img_rep, feat_lst, labels, max_boosters=7):
   '''Chain several boosters from different runs of AdaBoost'''
   weights = np.ones(labels.shape[0]) / labels.shape[0]
   boosters = np.empty(max_boosters, dtype='object')
@@ -286,23 +302,14 @@ def cascade(int_img_rep, feat_lst, labels, max_boosters=15):
   for t in range(max_boosters):
     print('\n\n---Running Cascade trial---', t + 1)
     print('Data Size:', labels.shape[0])
-    booster, weights = adaboost(int_img_rep, feat_lst, labels, weights)
-    hypotheses = eval_booster(int_img_rep, booster)
+    booster, threshold, weights = adaboost(int_img_rep, feat_lst, labels, weights)
 
-    print('\n\nFalse Negative Before Thresholding:', 
-      false_negative_rate(labels, hypotheses))
-    print('False Positive Before Thresholding:', 
-      false_positive_rate(labels, hypotheses))
-    print('Threshold:', np.min(hypotheses[labels == 1]), 
-      'Overall:', np.min(hypotheses))
-
-    threshold = np.min(hypotheses[labels == 1])
-    hypotheses -= threshold
     boosters[t] = (booster, threshold)
     np.save('cached/boosters.npy', boosters)
 
+    hypotheses = eval_booster(int_img_rep, booster, threshold)
     false_pos_rate *= false_positive_rate(labels, hypotheses)
-    print('False Positive Of Cascade:', false_pos_rate)
+    print('\n\nFalse Positive Of Cascade:', false_pos_rate)
     if false_pos_rate < 0.01:
       break
     
@@ -317,14 +324,3 @@ def cascade(int_img_rep, feat_lst, labels, max_boosters=15):
       np.count_nonzero(labels == 1)))
 
   return boosters[boosters != None]
-
-def eval_cascade(int_img_rep, boosters):
-  '''Return N * 1 array of hypotheses for N * 64 * 64 int_img_rep'''
-  hypotheses = np.zeros(int_img_rep.shape[0])
-
-  for i in range(boosters.shape[0]):
-    booster, threshold = boosters[i]
-    hypotheses = eval_booster(int_img_rep, booster) - threshold
-    int_img_rep = int_img_rep[hypotheses >= 0]
-
-  return hypotheses
