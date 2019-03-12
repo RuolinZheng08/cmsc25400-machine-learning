@@ -38,34 +38,37 @@ class LSTM(nn.Module):
     self.n_hid = n_hid
     self.lstmcell = LSTMCell(n_in, n_hid)
 
-  def forward(self, x, hid, ctx):
+  def forward(self, x, tup):
+    hid, ctx = tup
     if hid is None:
       hid = torch.zeros(x.shape[1], self.n_hid)
       ctx = torch.zeros(x.shape[1], self.n_hid)
-    output = torch.zeros(xs.shape[0], xs.shape[1], self.n_hid)
+    output = torch.zeros(x.shape[0], x.shape[1], self.n_hid)
     for t in range(x.shape[0]):
       hid, ctx = self.lstmcell(x[t], (hid, ctx))
       output[t] = hid
     return output, (hid, ctx)
 
 def train(model, embedding, xs, ys):
-  embed_vecs = torch.stack(list(embed.values())).numpy()[:, None]
+  embed_vecs = torch.stack(list(embedding.values())).numpy()[:, None]
+  y_vecs = ys.numpy()
 
   opt = optim.SGD(model.parameters(), lr=5)
   criterion = nn.MSELoss()
   
   hid, ctx = None, None
-  for _ in range(10):
-    output, (hid, ctx) = model(xs, hid, ctx)
-    output, (hid, ctx) = model(ys, hid, ctx)
-
+  for e in range(20):
     opt.zero_grad()
+
+    output, (hid, ctx) = model(xs, (hid, ctx))
+    output, (hid, ctx) = model(ys, (hid, ctx))
+
     loss = criterion(output, ys)
     
     vecs = closest_vecs(embed_vecs, output.data.numpy()[:, None])
-    accuracy = np.count_nonzero(vecs != ys)
+    accuracy = compute_accuracy(vecs, y_vecs)
     loss.backward(retain_graph=True)
     opt.step()
-    print('loss: {} | accuracy: {}'.format(loss.item(), accuracy))
+    print('Epoch {} | loss: {},  accuracy: {}'.format(e, loss.item(), accuracy))
   
   return output, (hid, ctx)
