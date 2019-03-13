@@ -1,5 +1,5 @@
 import numpy as np
-from torch.nn.utils.rnn import pad_sequence
+import re
 
 def rand_embedding(words):
   '''Generate random word embeddings'''
@@ -24,15 +24,8 @@ def line_to_tensor(embedding, line):
     ret[idx] = embedding[word]
   return ret.unsqueeze(1)
 
-def batch_to_tensor(embedding, batch):
-  '''Return tensor of shape seq_len * batch_size * 200'''
-  ret = []
-  for line in batch:
-    ret.append(line_to_tensor(embedding, line))
-  return pad_sequence(ret)
-
 def compute_accuracy(pred, truth):
-  '''Compares the values from two numpy arrays'''
+  '''Compare the values from two numpy arrays'''
   diff = (pred != truth).any(axis=-1)
   return 1 - np.count_nonzero(diff) / truth.shape[1] / truth.shape[0]
 
@@ -43,5 +36,8 @@ def closest_vecs(embed_vecs, vecs):
   return idx, embed_vecs[idx].squeeze()
 
 def vecs_to_line(embed_key_vecs, idx):
-  '''Given a numpy array of string keys and indices, returns a string'''
-  return ' '.join(list(embed_key_vecs[idx].squeeze()))
+  '''Given a numpy array of string keys and indices, return a string'''
+  if idx.size == 1:
+    return embed_key_vecs[idx.item()]
+  else:
+    return ' '.join(list(embed_key_vecs[idx].squeeze()))
