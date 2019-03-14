@@ -34,6 +34,7 @@ class LSTM(nn.Module):
     super(LSTM, self).__init__()
     self.n_hid = n_hid
     self.lstmcell = LSTMCell(n_in, n_hid)
+    self.fc = nn.Linear(n_in, n_in)
 
   def forward(self, x, tup):
     hid, ctx = tup
@@ -44,83 +45,81 @@ class LSTM(nn.Module):
     for t in range(x.shape[0]):
       hid, ctx = self.lstmcell(x[t], (hid, ctx))
       output[t] = hid
-    return output, (hid, ctx)
+    return self.fc(output), (hid, ctx)
 
-def validate(model, embed_tup, dev_first, dev_second):
+def train(model, embed_tup, train_first, train_second, verbose=False, lr=1):
+  '''Train on test set'''
+  embed, embed_vecs, embed_key_vecs = embed_tup
+  opt = optim.SGD(model.parameters(), lr=lr)
+  criterion = nn.MSELoss()
+  loss, accu = [], []
+
+  for i in range(len(train_first)):
+    opt.zero_grad()
+
+    xs = line_to_tensor(embed, train_first[i])
+    ys = line_to_tensor(embed, train_second[i])
+    hid, ctx = None, None
+
+    output, (hid, ctx) = model(xs, (hid, ctx))
+    output, (hid, ctx) = model(ys, (hid, ctx))
+    output, ys = output[:-1], ys[1:]
+
+    idx, vecs = closest_vecs(embed_vecs, output.data.numpy()[:, None])
+    
+    loss_tens = criterion(output, ys)
+    loss.append(loss_tens.item())
+    accu.append(compute_accuracy(vecs[:, None], ys.numpy()))
+
+    loss_tens.backward(retain_graph=True)
+    opt.step()
+  if verbose:
+    print(vecs_to_line(embed_key_vecs, idx))
+  return loss, accu
+
+def validate(model, embed_tup, dev_first, dev_second, verbose=False):
   '''Validate on dev set'''
   embed, embed_vecs, embed_key_vecs = embed_tup
   criterion = nn.MSELoss()
-  loss, accuracy = 0, 0
-  n_dev = len(dev_first)
-  for i in range(n_dev):
+  loss, accu = [], []
+
+  for i in range(len(dev_first)):
     xs = line_to_tensor(embed, dev_first[i])
     ys = line_to_tensor(embed, dev_second[i])
     hid, ctx = None, None
 
     output, (hid, ctx) = model(xs, (hid, ctx))
     output, (hid, ctx) = model(ys, (hid, ctx))
-    idx, vecs = closest_vecs(glove_vecs, output.data.numpy()[:, None])
+    output, ys = output[:-1], ys[1:]
+
+    idx, vecs = closest_vecs(embed_vecs, output.data.numpy()[:, None])
     
-    loss += criterion(output, ys).item()
-    accuracy += compute_accuracy(vecs[:, None], ys.numpy())
-
-  return loss / n_dev, accuracy / n_dev
-
-def train(model, embed_tup, train_first, train_second, dev_first, dev_second,
-  n_epochs=30):
-  '''Train on test set'''
-  embed, embed_vecs, embed_key_vecs = embed_tup
-  opt = optim.Adam(model.parameters(), lr=0.1, weight_decay=0.001)
-  criterion = nn.MSELoss()
-  n_train = len(train_first)
-  t_losses, t_accus, d_losses, d_accus = [], [], [], []
-
-  for e in range(n_epochs):
-    loss, accuracy = 0, 0
-    for i in range(n_train):
-      xs = line_to_tensor(embed, train_first[i])
-      ys = line_to_tensor(embed, train_second[i])
-      hid, ctx = torch.zeros(1, 1, 200), torch.zeros(1, 1, 200)
-
-      output, (hid, ctx) = model(xs, (hid, ctx))
-      output, (hid, ctx) = model(ys, (hid, ctx))
-      idx, vecs = closest_vecs(glove_vecs, output.data.numpy()[:, None])
-      
-      loss_tens = criterion(output, ys)
-      loss += loss_tens.item()
-      accuracy += compute_accuracy(vecs[:, None], ys.numpy())
-
-      loss_tens.backward(retain_graph=True)
-      opt.step()
-
-    loss /= n_train
-    accuracy /= n_train
-    print('e {} | loss {}, accu {}'.format(e, loss, accuracy))
+    loss.append(criterion(output, ys).item())
+    accu.append(compute_accuracy(vecs[:, None], ys.numpy()))
+  if verbose:
     print(vecs_to_line(embed_key_vecs, idx))
-    if e % 10 == 0:
-      d_loss, d_accu = validate(model, embed_tup, dev_first, dev_second)
-      print('v | ', d_loss, d_accu)
-
-    t_losses.append(loss)
-    t_accus.append(accuracy)
-    d_losses.append(d_losses)
-    d_accus.append(d_accu)
-
-  return t_losses, t_accus, d_losses, d_accus
+  return loss, accu
 
 def predict(model, embed_tup, test_first):
+  '''Predict on test set'''
   embed, embed_vecs, embed_key_vecs = embed_tup
   pred_lines = []
   for i in range(len(test_first)):
-    line = ''
+    line = []
     xs = line_to_tensor(embed, test_first[i])
     hid, ctx = None, None
 
     output, (hid, ctx) = model(xs, (hid, ctx))
+    output, (hid, ctx) = model(line_to_tensor(embed, '<s>'), (hid, ctx))
+    line.append('<s>')
+
     for j in range(21):
-      output, (hid, ctx) = model(hid, (hid, ctx))
-      idx, vecs = closest_vecs(embed_vecs, hid.data.numpy()[:, None])
+      idx, vecs = closest_vecs(embed_vecs, output.data.numpy()[:, None])
       word = vecs_to_line(embed_key_vecs, idx)
-      line += word + ' '
-    pred_lines.append(line)
+      line.append(word)
+      if word == '</s>':
+        break
+      output, (hid, ctx) = model(hid.unsqueeze(0), (hid, ctx))
+
+    pred_lines.append(' '.join(line))
   return pred_lines
