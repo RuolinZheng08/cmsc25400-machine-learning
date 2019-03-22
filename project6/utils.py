@@ -1,3 +1,4 @@
+import torch
 import numpy as np
 import re
 
@@ -41,3 +42,16 @@ def vecs_to_line(embed_key_vecs, idx):
     return embed_key_vecs[idx.item()]
   else:
     return ' '.join(list(embed_key_vecs[idx].squeeze()))
+
+def string_accuracy(pred, truth):
+  '''Compare the words of two strings'''
+  pred = re.split(r'\s', pred)
+  truth = re.split(r'\s', truth)
+  lp, lt = len(pred), len(truth)
+  if lp < lt:
+    pred.extend([' '] * (lt - lp))
+  count = 0
+  for i in range(lt):
+    if pred[i] != truth[i]:
+      count += 1
+  return (lt - count) / lt

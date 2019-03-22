@@ -1,22 +1,37 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
-import matplotlib.pyplot as plt
 import numpy as np
+from utils import *
 
 class LSTMCell(nn.Module):
   '''An LSTMCell computes hidden and context for one word, (batch_size, n_in)'''
   def __init__(self, n_in, n_hid):
     super(LSTMCell, self).__init__()
     self.w_if = nn.Linear(n_in, n_hid)
+    self.w_if.weight.data.uniform_(-0.1, 0.1)
+    self.w_if.bias.data.zero_()
     self.w_ii = nn.Linear(n_in, n_hid)
+    self.w_ii.weight.data.uniform_(-0.1, 0.1)
+    self.w_ii.bias.data.zero_()
     self.w_ig = nn.Linear(n_in, n_hid)
+    self.w_ig.weight.data.uniform_(-0.1, 0.1)
+    self.w_ig.bias.data.zero_()
     self.w_io = nn.Linear(n_in, n_hid)
+    self.w_io.weight.data.uniform_(-0.1, 0.1)
+    self.w_io.bias.data.zero_()
     self.w_hf = nn.Linear(n_hid, n_hid)
+    self.w_hf.weight.data.uniform_(-0.1, 0.1)
+    self.w_hf.bias.data.zero_()
     self.w_hi = nn.Linear(n_hid, n_hid)
+    self.w_hi.weight.data.uniform_(-0.1, 0.1)
+    self.w_hi.bias.data.zero_()
     self.w_hg = nn.Linear(n_hid, n_hid)
+    self.w_hg.weight.data.uniform_(-0.1, 0.1)
+    self.w_hg.bias.data.zero_()
     self.w_ho = nn.Linear(n_hid, n_hid)
+    self.w_ho.weight.data.uniform_(-0.1, 0.1)
+    self.w_ho.bias.data.zero_()
 
   def forward(self, x, tup):
     hid, ctx = tup
@@ -47,16 +62,14 @@ class LSTM(nn.Module):
       output[t] = hid
     return self.fc(output), (hid, ctx)
 
-def train(model, embed_tup, train_first, train_second, verbose=False, lr=1):
+def train(model, opt, embed_tup, train_first, train_second, verbose=False):
   '''Train on test set'''
   embed, embed_vecs, embed_key_vecs = embed_tup
-  opt = optim.SGD(model.parameters(), lr=lr)
   criterion = nn.MSELoss()
   loss, accu = [], []
 
   for i in range(len(train_first)):
     opt.zero_grad()
-
     xs = line_to_tensor(embed, train_first[i])
     ys = line_to_tensor(embed, train_second[i])
     hid, ctx = None, None
@@ -74,7 +87,7 @@ def train(model, embed_tup, train_first, train_second, verbose=False, lr=1):
     loss_tens.backward(retain_graph=True)
     opt.step()
   if verbose:
-    print(vecs_to_line(embed_key_vecs, idx))
+    print('e | ' + vecs_to_line(embed_key_vecs, idx))
   return loss, accu
 
 def validate(model, embed_tup, dev_first, dev_second, verbose=False):
@@ -97,7 +110,7 @@ def validate(model, embed_tup, dev_first, dev_second, verbose=False):
     loss.append(criterion(output, ys).item())
     accu.append(compute_accuracy(vecs[:, None], ys.numpy()))
   if verbose:
-    print(vecs_to_line(embed_key_vecs, idx))
+    print('v | ' + vecs_to_line(embed_key_vecs, idx))
   return loss, accu
 
 def predict(model, embed_tup, test_first):
@@ -119,7 +132,8 @@ def predict(model, embed_tup, test_first):
       line.append(word)
       if word == '</s>':
         break
-      output, (hid, ctx) = model(hid.unsqueeze(0), (hid, ctx))
+      output, (hid, ctx) = model(torch.from_numpy(vecs[None, None, :]),
+        (hid, ctx))
 
     pred_lines.append(' '.join(line))
   return pred_lines
