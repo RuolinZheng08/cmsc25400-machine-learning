@@ -45,6 +45,12 @@ class NeuralNet():
     weights[-1] = np.random.normal(size=(n_out, self.per_hidden))
     self.weights = weights
 
+  def update_weights(self, weights):
+    '''Adjust configured parameters based on given weights'''
+    self.weights = weights
+    self.n_layers = len(weights)
+    self.per_hidden = weights[2].shape[0]
+
   def forward(self, batch_xs):
     '''Forward propagation on a given batch, return activations and zs'''
     alist, zlist = [None] * self.n_layers, [None] * self.n_layers
@@ -73,7 +79,7 @@ class NeuralNet():
     h_size = 10000
     holdout_xs, holdout_ys = xs[:h_size], ys[:h_size]
     train_xs, train_ys = xs[h_size:], ys[h_size:]
-    errors, prev_error = [], 1
+    losses, errors, prev_error = [], [], 1
 
     if self.weights is None:
       self.init_weights(train_xs.shape[1], 10)
@@ -87,20 +93,20 @@ class NeuralNet():
 
         alist, zlist = self.forward(batch_xs)
         yprobs = alist[-1]
-        loss = -np.log10(yprobs[np.arange(yprobs.shape[0]), batch_ys])
+        loss = np.sum(-np.log10(yprobs[np.arange(yprobs.shape[0]), batch_ys]))
+        losses.append(loss)
         gradients = self.backward(batch_ys, alist, zlist, yprobs)
         self.weights = [w - self.lr * g if w is not None else None 
         for w, g in zip(self.weights, gradients)]
 
       error = self.validate(holdout_xs, holdout_ys)
       errors.append(error)
-      if error > prev_error + 0.03:
+      if error > prev_error + 0.02:
         break
       prev_error = error
-      if e % 20 == 0:
-        print('Epoch {}, error {}'.format(e, error))
+      print('Epoch {}, error {}'.format(e, error))
 
-    return errors
+    return errors, losses
 
   def predict(self, test_xs):
     '''Return an array of integer y label prediction'''
