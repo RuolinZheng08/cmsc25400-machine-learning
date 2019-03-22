@@ -75,7 +75,7 @@ def main():
     predictions = np.append(predictions, prediction)
   with open('test35.predictions', 'wt') as f:
     for res in predictions:
-      f.write(str(res) + '\n')
+      f.write(str(int(res)) + '\n')
 
   # plt.gray()
   # fig = plt.figure()

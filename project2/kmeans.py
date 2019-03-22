@@ -28,8 +28,7 @@ def one_iter(data, centroids):
     j_hat = np.argmin(np.apply_along_axis(dist, 1, centroids, data[i]))
     clusters[j_hat] = np.vstack((clusters[j_hat], data[i]))
   for j in range(k):
-    centroids[j] = np.mean(clusters[j], axis=0)
-  
+    centroids[j] = np.mean(clusters[j], axis=0) 
   return clusters
 
 def kmeans(data, k, init_func=random_init):
